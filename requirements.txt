@@ -1,0 +1,7 @@
+openai-agents
+openai>=2.19.0,<2.48.0
+python-dotenv
+flask
+requests
+fpdf2
+eval_type_backport; python_version < "3.10"
