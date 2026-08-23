@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "travel-assistant": {
+      "command": "/Users/santoshsingam/Projects/advance-travel-assistant/venv/bin/python",
+      "args": ["-m", "travel_assistant.mcp_server"]
+    }
+  }
+}

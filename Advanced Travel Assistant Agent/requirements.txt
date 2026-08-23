@@ -1,0 +1,4 @@
+requests
+fpdf2
+pillow
+mcp
