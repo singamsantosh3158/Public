@@ -40,11 +40,33 @@ CLI:
 .venv/bin/python src/main.py
 ```
 
-Web UI (multi-conversation history, auto-generated charts, sign-in/out, chat export):
+Streamlit web UI (multi-conversation history, auto-generated charts, sign-in/out, chat export):
 
 ```bash
 .venv/bin/streamlit run src/app.py
 ```
+
+Gradio web UI (polished chat interface out of the box, less custom styling to maintain):
+
+```bash
+.venv/bin/python src/gradio_app.py
+```
+
+React web UI (custom Vite + React + Tailwind 4 frontend, full design control — sidebar,
+header, transcript, composer, and a resizable report panel for DAX/results). Requires Node.js
+18+; run the backend and frontend in two terminals:
+
+```bash
+# Terminal 1 — API backend
+.venv/bin/python -m uvicorn src.api_server:app --reload --port 8787 --app-dir .
+
+# Terminal 2 — frontend dev server (proxies /api to the backend above)
+cd frontend
+npm install   # first time only
+npm run dev
+```
+
+Open the URL Vite prints (typically `http://localhost:5173`).
 
 The first question triggers a browser sign-in prompt. After that, ask things like:
 

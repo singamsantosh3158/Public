@@ -176,6 +176,27 @@ st.markdown(
         border-top: 1px solid #E8E8E8;
         background-color: #FFFFFF;
     }
+
+    /* Reply card footer: Export + Show/Hide query */
+    .card-footer-divider {border-top: 1px solid #EEF0F2; margin: 0.6rem 0 0.5rem;}
+    [data-testid="stChatMessage"] .stButton>button,
+    [data-testid="stChatMessage"] .stDownloadButton>button {
+        background-color: transparent;
+        color: #6B7280;
+        border: 1px solid #E0E0E0;
+        border-radius: 8px;
+        font-weight: 500;
+        font-size: 1rem;
+        padding-top: 0.35rem;
+        padding-bottom: 0.35rem;
+        transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    [data-testid="stChatMessage"] .stButton>button:hover,
+    [data-testid="stChatMessage"] .stDownloadButton>button:hover {
+        background-color: #F5F9FF;
+        border-color: #1E88E5;
+        color: #1E88E5;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -274,38 +295,58 @@ def build_analysis_note(dax_calls: list[dict]) -> str | None:
     return note
 
 
-def render_dax_calls(dax_calls: list[dict], key_prefix: str) -> None:
+def render_dax_results(dax_calls: list[dict], key_prefix: str) -> None:
+    """Renders each DAX call's outcome (metrics/chart/table/error) — always visible."""
     for i, call in enumerate(dax_calls, start=1):
-        with st.expander(f"🔎 DAX query {i}"):
-            st.code(call["query"], language="sql")
-            if call["error"]:
-                st.error(call["error"])
-                continue
+        if call["error"]:
+            st.error(call["error"])
+            continue
 
-            rows = json.loads(call["result"])
-            if not rows:
-                st.info("No rows returned.")
-                continue
+        rows = json.loads(call["result"])
+        if not rows:
+            st.info("No rows returned.")
+            continue
 
-            if len(rows) == 1:
-                metrics, context = render_single_row_metrics(rows[0])
-                if metrics:
-                    for col, (label, value) in zip(st.columns(len(metrics)), metrics):
-                        col.metric(label, value)
-                if context:
-                    st.dataframe(
-                        pd.DataFrame([context]),
-                        use_container_width=True,
-                        hide_index=True,
-                        key=f"{key_prefix}_ctx_{i}",
-                    )
-            else:
-                fig = build_chart(rows)
-                if fig is not None:
-                    st.plotly_chart(fig, use_container_width=True, theme=None, key=f"{key_prefix}_chart_{i}")
+        if len(rows) == 1:
+            metrics, context = render_single_row_metrics(rows[0])
+            if metrics:
+                for col, (label, value) in zip(st.columns(len(metrics)), metrics):
+                    col.metric(label, value)
+            if context:
                 st.dataframe(
-                    pd.DataFrame(rows), use_container_width=True, hide_index=True, key=f"{key_prefix}_df_{i}"
+                    pd.DataFrame([context]),
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"{key_prefix}_ctx_{i}",
                 )
+        else:
+            fig = build_chart(rows)
+            if fig is not None:
+                st.plotly_chart(fig, use_container_width=True, theme=None, key=f"{key_prefix}_chart_{i}")
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, key=f"{key_prefix}_df_{i}")
+
+
+def render_dax_queries(dax_calls: list[dict]) -> None:
+    """Renders just the DAX query text — st.code ships its own copy-to-clipboard icon."""
+    for i, call in enumerate(dax_calls, start=1):
+        if len(dax_calls) > 1:
+            st.caption(f"DAX query {i}")
+        st.code(call["query"], language="sql")
+
+
+def build_card_export(question: str, msg: dict) -> str:
+    lines = ["# Audit Chat Agent - Q&A Export", f"_Exported {datetime.now().isoformat(timespec='seconds')}_", ""]
+    lines.append(f"**You**: {question}")
+    lines.append(f"**Agent**: {msg['content']}")
+    for i, call in enumerate(msg.get("dax", []), start=1):
+        lines.append(f"\n<details><summary>DAX query {i}</summary>\n")
+        lines.append(f"```dax\n{call['query']}\n```")
+        if call["error"]:
+            lines.append(f"\nError: {call['error']}")
+        else:
+            lines.append(f"\nResult:\n```json\n{call['result']}\n```")
+        lines.append("</details>")
+    return "\n".join(lines)
 
 
 def build_export(history: list[dict]) -> str:
@@ -405,10 +446,37 @@ with content_col:
         with st.chat_message(msg["role"], avatar=avatar):
             st.markdown(msg["content"])
             if msg.get("dax"):
+                key_prefix = f"{st.session_state.current_conv_id}_msg{msg_idx}"
                 note = build_analysis_note(msg["dax"])
                 if note:
                     st.caption(f"📝 {note}")
-                render_dax_calls(msg["dax"], key_prefix=f"{st.session_state.current_conv_id}_msg{msg_idx}")
+                render_dax_results(msg["dax"], key_prefix)
+
+                toggle_key = f"{key_prefix}_show_dax"
+                if toggle_key not in st.session_state:
+                    st.session_state[toggle_key] = False
+
+                st.markdown('<div class="card-footer-divider"></div>', unsafe_allow_html=True)
+                with st.container(key=f"{key_prefix}_footer"):
+                    export_col, toggle_col = st.columns(2)
+                    with export_col:
+                        question_text = current_history[msg_idx - 1]["content"] if msg_idx > 0 else ""
+                        st.download_button(
+                            "⬇️ Export",
+                            data=build_card_export(question_text, msg),
+                            file_name=f"audit_qa_{msg_idx}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                            mime="text/markdown",
+                            use_container_width=True,
+                            key=f"{key_prefix}_export",
+                        )
+                    with toggle_col:
+                        toggle_label = "🔼 Hide query" if st.session_state[toggle_key] else "🔎 Show query"
+                        if st.button(toggle_label, use_container_width=True, key=f"{key_prefix}_toggle"):
+                            st.session_state[toggle_key] = not st.session_state[toggle_key]
+                            st.rerun()
+
+                if st.session_state[toggle_key]:
+                    render_dax_queries(msg["dax"])
 
 question = st.chat_input("Ask about your Fabric semantic model...")
 if question:
