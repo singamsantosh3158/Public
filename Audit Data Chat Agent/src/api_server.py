@@ -13,7 +13,8 @@ send). The parsed schema is cached process-wide since it's the same for every
 conversation and doesn't change.
 
 Caveat this does NOT fix: Fabric sign-in (`fabric_client`) is still one
-shared credential for the whole process, regardless of FABRIC_AUTH_MODE —
+shared credential for the whole process — `InteractiveBrowserCredential` pops
+a browser on the machine running this server, not the visiting browser, so
 there's no per-visitor Fabric identity without a real OAuth redirect flow
 (bigger change, not done here).
 """
@@ -33,7 +34,6 @@ import db
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent import FabricAgent
@@ -118,35 +118,24 @@ class SendMessageRequest(BaseModel):
 
 @app.get("/api/auth/status")
 def auth_status():
-    return {
-        "signedIn": fabric_client.is_signed_in,
-        "user": fabric_client.signed_in_user,
-        "deviceCode": fabric_client.pending_device_code,
-    }
+    return {"signedIn": fabric_client.is_signed_in, "user": fabric_client.signed_in_user}
 
 
 @app.post("/api/auth/signin")
 def auth_signin():
-    # A sync path-operation function: FastAPI runs it in a thread pool automatically, so
-    # this blocking call doesn't stall the event loop. In browser mode it opens a real
-    # browser window and waits for the full sign-in. In device_code mode it only waits
-    # for the code to be issued (a few seconds) and returns that — the frontend then
-    # polls /api/auth/status until the user finishes the flow on their own device.
+    # A sync path-operation function: FastAPI runs it in a thread pool automatically,
+    # so this blocking call (opens a real browser window and waits) doesn't stall the event loop.
     try:
-        device_code = fabric_client.sign_in()
+        fabric_client.sign_in()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {
-        "signedIn": fabric_client.is_signed_in,
-        "user": fabric_client.signed_in_user,
-        "deviceCode": device_code,
-    }
+    return {"signedIn": fabric_client.is_signed_in, "user": fabric_client.signed_in_user}
 
 
 @app.post("/api/auth/signout")
 def auth_signout():
     fabric_client.sign_out()
-    return {"signedIn": False, "user": None, "deviceCode": None}
+    return {"signedIn": False, "user": None}
 
 
 @app.get("/api/conversations")
@@ -238,12 +227,3 @@ async def send_message(conv_id: str, body: SendMessageRequest):
     conv["history"].append(reply)
     _persist(conv_id)
     return reply
-
-
-# Serves the built React app (frontend/dist) when present, so this one process can be
-# the whole deployment — no separate static host or CORS setup needed. Mounted last so
-# it never shadows the /api/* routes above. Absent in local dev (frontend runs via its
-# own `npm run dev` + vite proxy instead), so this is skipped there.
-_frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
-if os.path.isdir(_frontend_dist):
-    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")

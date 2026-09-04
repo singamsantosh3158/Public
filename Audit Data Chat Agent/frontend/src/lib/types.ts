@@ -18,13 +18,7 @@ export interface Conversation {
   messages: ChatMessage[]
 }
 
-export interface DeviceCode {
-  verificationUri: string
-  userCode: string
-}
-
 export interface AuthStatus {
   signedIn: boolean
   user: string | null
-  deviceCode?: DeviceCode | null
 }
