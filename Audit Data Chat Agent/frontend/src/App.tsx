@@ -38,6 +38,27 @@ export default function App() {
       .catch(() => {})
   }, [])
 
+  // Device-code sign-in: once a code is issued, poll status until the user completes it
+  // elsewhere (or give up after 10 minutes so the button doesn't stay stuck forever).
+  useEffect(() => {
+    if (!auth.deviceCode || auth.signedIn) return
+    let attempts = 0
+    const interval = setInterval(() => {
+      attempts += 1
+      if (attempts > 200) {
+        clearInterval(interval)
+        setAuthLoading(false)
+        return
+      }
+      api.authStatus().then(setAuth).catch(() => {})
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [auth.deviceCode, auth.signedIn])
+
+  useEffect(() => {
+    if (auth.signedIn) setAuthLoading(false)
+  }, [auth.signedIn])
+
   const handleNewChat = async () => {
     const conv = await api.newConversation()
     setConversations((prev) => [conv, ...prev])
@@ -109,8 +130,10 @@ export default function App() {
   const handleSignIn = async () => {
     setAuthLoading(true)
     try {
-      setAuth(await api.signIn())
-    } finally {
+      const result = await api.signIn()
+      setAuth(result)
+      if (!result.deviceCode) setAuthLoading(false)
+    } catch {
       setAuthLoading(false)
     }
   }
@@ -142,6 +165,20 @@ export default function App() {
           theme={theme}
           onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         />
+        {auth.deviceCode && !auth.signedIn && (
+          <div className="border-b border-primary/30 bg-primary/10 px-4 py-2 text-center text-sm text-primary">
+            To finish signing in to Fabric, go to{' '}
+            <a
+              href={auth.deviceCode.verificationUri}
+              target="_blank"
+              rel="noreferrer"
+              className="font-semibold underline"
+            >
+              {auth.deviceCode.verificationUri}
+            </a>{' '}
+            and enter code <span className="font-mono font-semibold">{auth.deviceCode.userCode}</span>
+          </div>
+        )}
         <Transcript
           messages={current?.messages ?? []}
           pending={pending}

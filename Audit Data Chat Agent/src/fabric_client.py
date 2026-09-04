@@ -6,8 +6,11 @@ import base64
 import json
 import os
 
+import threading
+import time
+
 import requests
-from azure.identity import InteractiveBrowserCredential
+from azure.identity import DeviceCodeCredential, InteractiveBrowserCredential
 
 POWER_BI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
 EXECUTE_QUERIES_URL = (
@@ -25,15 +28,39 @@ SCHEMA_MEASURES_DAX = "EVALUATE INFO.VIEW.MEASURES()"
 
 
 class FabricSemanticModelClient:
-    """Executes DAX queries against a Fabric/Power BI semantic model (dataset)."""
+    """Executes DAX queries against a Fabric/Power BI semantic model (dataset).
+
+    Sign-in mode is controlled by FABRIC_AUTH_MODE:
+      - "browser" (default): InteractiveBrowserCredential — pops a real browser window
+        on the machine running this process. Only works when that machine has a display,
+        i.e. local/CLI use.
+      - "device_code": DeviceCodeCredential — prints/returns a short code and a URL that
+        can be completed on *any* device. Required for a headless deployment (a cloud
+        server has no browser of its own). Still a single shared identity for the whole
+        process either way — see api_server.py's module docstring for that caveat.
+    """
 
     def __init__(self, workspace_id: str, dataset_id: str):
         self.workspace_id = workspace_id
         self.dataset_id = dataset_id
         self._client_id = os.environ.get("AZURE_CLIENT_ID", DEFAULT_CLIENT_ID)
         self._tenant_id = os.environ.get("AZURE_TENANT_ID", "organizations")
-        self._credential = InteractiveBrowserCredential(client_id=self._client_id, tenant_id=self._tenant_id)
+        self._auth_mode = os.environ.get("FABRIC_AUTH_MODE", "browser")
+        self._credential = self._new_credential()
         self._token = None
+        self._pending_code: dict | None = None
+
+    def _new_credential(self):
+        if self._auth_mode == "device_code":
+            return DeviceCodeCredential(
+                client_id=self._client_id,
+                tenant_id=self._tenant_id,
+                prompt_callback=self._on_device_code,
+            )
+        return InteractiveBrowserCredential(client_id=self._client_id, tenant_id=self._tenant_id)
+
+    def _on_device_code(self, verification_uri: str, user_code: str, expires_on) -> None:
+        self._pending_code = {"verificationUri": verification_uri, "userCode": user_code}
 
     @property
     def is_signed_in(self) -> bool:
@@ -51,14 +78,40 @@ class FabricSemanticModelClient:
             or claims.get("unique_name")
         )
 
-    def sign_in(self) -> None:
-        """Explicitly triggers the interactive browser sign-in (opens a browser window)."""
-        self._get_token()
+    @property
+    def pending_device_code(self) -> dict | None:
+        """Set while a device-code sign-in is waiting on the user to complete it elsewhere."""
+        return self._pending_code
+
+    def sign_in(self) -> dict | None:
+        """Triggers sign-in. In browser mode this blocks until the popup completes and
+        returns None. In device_code mode this starts the token fetch in the background
+        and returns {"verificationUri", "userCode"} as soon as it's issued, without
+        waiting for the user to actually complete it — poll `is_signed_in` for that."""
+        if self._auth_mode != "device_code":
+            self._get_token()
+            return None
+
+        self._pending_code = None
+
+        def _run():
+            try:
+                self._token = self._credential.get_token(POWER_BI_SCOPE)
+            finally:
+                self._pending_code = None
+
+        threading.Thread(target=_run, daemon=True).start()
+        for _ in range(200):  # up to 10s for the callback to fire
+            if self._pending_code is not None:
+                return self._pending_code
+            time.sleep(0.05)
+        raise RuntimeError("Timed out starting device code sign-in")
 
     def sign_out(self) -> None:
         """Drops the current token and credential so the next sign-in starts fresh."""
         self._token = None
-        self._credential = InteractiveBrowserCredential(client_id=self._client_id, tenant_id=self._tenant_id)
+        self._pending_code = None
+        self._credential = self._new_credential()
 
     def _get_token(self) -> str:
         if self._token is None or self._token.expires_on <= _now():
@@ -104,8 +157,6 @@ class FabricQueryError(RuntimeError):
 
 
 def _now() -> float:
-    import time
-
     return time.time()
 
 
